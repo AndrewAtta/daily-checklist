@@ -134,6 +134,7 @@ class ColouredCalendar(QCalendarWidget):
         super().__init__(parent)
         self.setMinimumHeight(420)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setFirstDayOfWeek(Qt.Monday)
 
         # Force weekday header text colours – Qt ignores stylesheet for these
         fmt = self.headerTextFormat()
