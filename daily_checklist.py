@@ -183,13 +183,13 @@ class ColouredCalendar(QCalendarWidget):
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(cell, 6, 6)
         else:
-            # Draw empty portion (full cell)
-            painter.setBrush(BAR_BG)
+            # Draw background: red if 0 completed, grey otherwise
+            fraction = done / total if total > 0 else 0.0
+            painter.setBrush(BAR_RED if fraction == 0 else BAR_BG)
             painter.setPen(Qt.NoPen)
             painter.drawRoundedRect(cell, 6, 6)
 
             # Draw filled portion left→right
-            fraction = done / total if total > 0 else 0.0
             if fraction > 0:
                 fill_color = _lerp_color(BAR_RED, BAR_GREEN, fraction)
                 fill_width = int(cell.width() * fraction)
