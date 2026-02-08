@@ -238,6 +238,7 @@ class ColouredCalendar(QCalendarWidget):
 # ── Task row widget ───────────────────────────────────────────────────
 class TaskRow(QWidget):
     changed = pyqtSignal()
+    removed = pyqtSignal()
 
     def __init__(self, index: int, task: dict, parent=None):
         super().__init__(parent)
@@ -255,6 +256,13 @@ class TaskRow(QWidget):
         self.text_edit.textChanged.connect(self._on_text)
         self._apply_strike()
 
+        remove_btn = QPushButton("\u00d7")
+        remove_btn.setObjectName("removeTaskBtn")
+        remove_btn.setFixedSize(24, 24)
+        remove_btn.setCursor(Qt.PointingHandCursor)
+        remove_btn.setToolTip("Remove task")
+        remove_btn.clicked.connect(self.removed.emit)
+
         layout.addWidget(self.checkbox)
         layout.addWidget(self.text_edit)
 
@@ -265,6 +273,8 @@ class TaskRow(QWidget):
                 "padding: 1px 6px; font-size: 11px;"
             )
             layout.addWidget(tag)
+
+        layout.addWidget(remove_btn)
 
     def _on_toggle(self, state):
         self.task["done"] = state == Qt.Checked
@@ -399,6 +409,7 @@ class MainWindow(QMainWindow):
         for i in range(len(data)):
             row = TaskRow(i, data[i])
             row.changed.connect(lambda d=day, dt=data: self._on_task_changed(d, dt))
+            row.removed.connect(lambda idx=i: self._remove_task(idx))
             self.task_container.addWidget(row)
 
     def _add_task(self):
@@ -407,6 +418,16 @@ class MainWindow(QMainWindow):
         if data is None:
             data = blank_tasks()
         data.append({"text": "", "done": False, "carried": False})
+        save_day(day, data)
+        self._render_checklist()
+        self.calendar.updateCells()
+
+    def _remove_task(self, index: int):
+        day = self.selected_date
+        data = load_day(day)
+        if data is None or index >= len(data):
+            return
+        data.pop(index)
         save_day(day, data)
         self._render_checklist()
         self.calendar.updateCells()
@@ -528,6 +549,19 @@ QPushButton#addTaskBtn {{
 QPushButton#addTaskBtn:hover {{
     background: {UBUNTU_BORDER};
     color: {UBUNTU_TEXT};
+}}
+QPushButton#removeTaskBtn {{
+    background: transparent;
+    border: none;
+    color: {UBUNTU_TEXT_DIM};
+    font-size: 16px;
+    font-weight: bold;
+    border-radius: 12px;
+    padding: 0px;
+}}
+QPushButton#removeTaskBtn:hover {{
+    background: #c0392b;
+    color: #ffffff;
 }}
 """
 
