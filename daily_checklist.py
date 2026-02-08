@@ -105,16 +105,23 @@ def carry_over_tasks(today: date) -> None:
     if any(t["carried"] for t in today_data):
         return
 
+    # Fill empty slots first
     slot = 0
-    for task in incomplete:
-        while slot < TASKS_PER_DAY and today_data[slot]["text"].strip():
+    remaining = list(incomplete)
+    for task in list(remaining):
+        while slot < len(today_data) and today_data[slot]["text"].strip():
             slot += 1
-        if slot >= TASKS_PER_DAY:
+        if slot >= len(today_data):
             break
         today_data[slot]["text"] = task["text"]
         today_data[slot]["done"] = False
         today_data[slot]["carried"] = True
+        remaining.remove(task)
         slot += 1
+
+    # Append any that didn't fit into existing slots
+    for task in remaining:
+        today_data.append({"text": task["text"], "done": False, "carried": True})
 
     save_day(today, today_data)
 
@@ -341,6 +348,14 @@ class MainWindow(QMainWindow):
         self.task_container.setSpacing(4)
         root.addLayout(self.task_container)
 
+        # ── Add Task button ──
+        self.add_task_btn = QPushButton("+ Add Task")
+        self.add_task_btn.setFixedHeight(30)
+        self.add_task_btn.setCursor(Qt.PointingHandCursor)
+        self.add_task_btn.setObjectName("addTaskBtn")
+        self.add_task_btn.clicked.connect(self._add_task)
+        root.addWidget(self.add_task_btn)
+
         root.addStretch()
 
         info = QLabel("Click a day to edit its checklist. Incomplete tasks carry over automatically.")
@@ -375,14 +390,26 @@ class MainWindow(QMainWindow):
             data = blank_tasks()
             save_day(day, data)
 
+        self._current_data = data
+
         has_carried = any(t.get("carried") for t in data)
         suffix = "  (has carry-over tasks)" if has_carried else ""
         self.checklist_label.setText(day_label + suffix)
 
-        for i in range(TASKS_PER_DAY):
+        for i in range(len(data)):
             row = TaskRow(i, data[i])
             row.changed.connect(lambda d=day, dt=data: self._on_task_changed(d, dt))
             self.task_container.addWidget(row)
+
+    def _add_task(self):
+        day = self.selected_date
+        data = load_day(day)
+        if data is None:
+            data = blank_tasks()
+        data.append({"text": "", "done": False, "carried": False})
+        save_day(day, data)
+        self._render_checklist()
+        self.calendar.updateCells()
 
     def _on_task_changed(self, day: date, tasks: list[dict]):
         save_day(day, tasks)
@@ -491,6 +518,16 @@ QPushButton:hover {{
 }}
 QPushButton:pressed {{
     background: #b83d0e;
+}}
+QPushButton#addTaskBtn {{
+    background: {UBUNTU_SURFACE_LIGHT};
+    border: 1px dashed {UBUNTU_BORDER};
+    color: {UBUNTU_TEXT_DIM};
+    font-weight: normal;
+}}
+QPushButton#addTaskBtn:hover {{
+    background: {UBUNTU_BORDER};
+    color: {UBUNTU_TEXT};
 }}
 """
 
