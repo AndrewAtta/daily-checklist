@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -286,6 +287,13 @@ class MainWindow(QMainWindow):
         self.calendar.clicked.connect(self._on_date_clicked)
         root.addWidget(self.calendar, stretch=3)
 
+        # ── Today button ──
+        today_btn = QPushButton("Today")
+        today_btn.setFixedHeight(32)
+        today_btn.setCursor(Qt.PointingHandCursor)
+        today_btn.clicked.connect(self._jump_to_today)
+        root.addWidget(today_btn)
+
         # ── Legend ──
         legend_layout = QHBoxLayout()
         legend_layout.setSpacing(8)
@@ -328,6 +336,12 @@ class MainWindow(QMainWindow):
         root.addWidget(info)
 
         self.selected_date = date.today()
+        self._render_checklist()
+
+    def _jump_to_today(self):
+        today = date.today()
+        self.calendar.setSelectedDate(QDate(today.year, today.month, today.day))
+        self.selected_date = today
         self._render_checklist()
 
     def _on_date_clicked(self, qdate: QDate):
@@ -413,6 +427,17 @@ QCalendarWidget QWidget#qt_calendar_navigationbar {{
     border-top-right-radius: 8px;
     padding: 4px;
 }}
+QCalendarWidget QHeaderView {{
+    background: {UBUNTU_SURFACE};
+}}
+QCalendarWidget QHeaderView::section {{
+    background: {UBUNTU_SURFACE};
+    color: {UBUNTU_TEXT};
+    border: none;
+    padding: 4px;
+    font-weight: bold;
+    font-size: 13px;
+}}
 QCheckBox::indicator {{
     width: 20px;
     height: 20px;
@@ -438,6 +463,21 @@ QLineEdit {{
 }}
 QLineEdit:focus {{
     border-bottom: 2px solid {UBUNTU_ACCENT};
+}}
+QPushButton {{
+    background: {UBUNTU_ACCENT};
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: bold;
+}}
+QPushButton:hover {{
+    background: #d14510;
+}}
+QPushButton:pressed {{
+    background: #b83d0e;
 }}
 """
 
