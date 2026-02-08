@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Daily Checklist – a native Linux desktop calendar-checklist app."""
 
+import fcntl
 import json
+import os
+import signal
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -567,14 +570,83 @@ QPushButton#removeTaskBtn:hover {{
 """
 
 
+LOCK_FILE = DATA_DIR / "daily-checklist.lock"
+PID_FILE = DATA_DIR / "daily-checklist.pid"
+
+
+def _raise_existing_instance() -> bool:
+    """Try to raise an already-running instance. Return True if successful."""
+    if not PID_FILE.exists():
+        return False
+    try:
+        pid = int(PID_FILE.read_text().strip())
+        # Check the process is alive
+        os.kill(pid, 0)
+        # Send SIGUSR1 to tell it to raise its window
+        os.kill(pid, signal.SIGUSR1)
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        return False
+
+
 def main():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Try to raise an existing instance before creating QApplication
+    if _raise_existing_instance():
+        print("Raised existing instance.")
+        sys.exit(0)
+
+    # Acquire an exclusive lock (non-blocking)
+    lock_fp = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Another instance grabbed the lock between our check and here
+        if _raise_existing_instance():
+            sys.exit(0)
+        # Fall through and start anyway if we can't signal it
+    PID_FILE.write_text(str(os.getpid()))
+
     app = QApplication(sys.argv)
     app.setApplicationName("Daily Checklist")
     app.setStyleSheet(STYLESHEET)
 
     window = MainWindow()
     window.show()
-    sys.exit(app.exec_())
+
+    # Handle SIGUSR1: raise & activate the window
+    def _handle_raise(signum, frame):
+        window.showNormal()
+        window.activateWindow()
+        window.raise_()
+
+    signal.signal(signal.SIGUSR1, _handle_raise)
+
+    # Make sure Python can process signals while Qt event loop runs
+    import socket
+    rsock, wsock = socket.socketpair()
+    rsock.setblocking(False)
+    wsock.setblocking(False)
+
+    from PyQt5.QtCore import QSocketNotifier
+    notifier = QSocketNotifier(rsock.fileno(), QSocketNotifier.Read)
+    notifier.activated.connect(lambda: rsock.recv(1))
+
+    old_wakeup = signal.set_wakeup_fd(wsock.fileno())
+
+    ret = app.exec_()
+
+    # Cleanup
+    signal.set_wakeup_fd(old_wakeup)
+    rsock.close()
+    wsock.close()
+    try:
+        PID_FILE.unlink()
+    except OSError:
+        pass
+    lock_fp.close()
+    sys.exit(ret)
 
 
 if __name__ == "__main__":
