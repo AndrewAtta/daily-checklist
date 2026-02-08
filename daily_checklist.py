@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QDate, QRect, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QTextCharFormat
 from PyQt5.QtWidgets import (
     QApplication,
     QCalendarWidget,
@@ -127,6 +127,19 @@ class ColouredCalendar(QCalendarWidget):
         super().__init__(parent)
         self.setMinimumHeight(420)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Force weekday header text colours – Qt ignores stylesheet for these
+        fmt = self.headerTextFormat()
+        fmt.setForeground(QColor(UBUNTU_TEXT))
+        fmt.setBackground(QColor(UBUNTU_SURFACE))
+        self.setHeaderTextFormat(fmt)
+
+        # Also override the per-day-of-week formats (Sun=red, Sat=blue by default)
+        for day in range(1, 8):  # Qt::Monday=1 … Qt::Sunday=7
+            wfmt = self.weekdayTextFormat(Qt.DayOfWeek(day))
+            wfmt.setForeground(QColor(UBUNTU_TEXT))
+            wfmt.setBackground(QColor(UBUNTU_SURFACE))
+            self.setWeekdayTextFormat(Qt.DayOfWeek(day), wfmt)
 
     def paintCell(self, painter: QPainter, rect, qdate: QDate):
         day = date(qdate.year(), qdate.month(), qdate.day())
