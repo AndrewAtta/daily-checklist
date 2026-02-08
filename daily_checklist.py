@@ -2,13 +2,12 @@
 """Daily Checklist – a native Linux desktop calendar-checklist app."""
 
 import json
-import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QDate, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QIcon
+from PyQt5.QtCore import Qt, QDate, QRect, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPainter, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCalendarWidget,
@@ -17,6 +16,8 @@ from PyQt5.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -24,16 +25,30 @@ from PyQt5.QtWidgets import (
 TASKS_PER_DAY = 5
 DATA_DIR = Path.home() / ".local" / "share" / "daily-checklist"
 
-# ── Colour scale: 0/5 → red … 5/5 → green ────────────────────────────
-COMPLETION_COLORS = [
-    QColor("#c0392b"),  # 0 / 5  – red
-    QColor("#d35400"),  # 1 / 5
-    QColor("#d4a017"),  # 2 / 5
-    QColor("#7dab3e"),  # 3 / 5
-    QColor("#3d9b40"),  # 4 / 5
-    QColor("#27ae60"),  # 5 / 5  – green
-]
-NO_TASK_COLOR = QColor("#2c3e6b")
+# ── Ubuntu Yaru-inspired palette ──────────────────────────────────────
+UBUNTU_BG = "#2c2c2c"
+UBUNTU_SURFACE = "#3d3d3d"
+UBUNTU_SURFACE_LIGHT = "#4a4a4a"
+UBUNTU_BORDER = "#505050"
+UBUNTU_TEXT = "#f0f0f0"
+UBUNTU_TEXT_DIM = "#999999"
+UBUNTU_ACCENT = "#e95420"  # Ubuntu orange
+UBUNTU_GREEN = "#27ae60"
+
+# Progress bar: left colour (incomplete) → right colour (complete)
+BAR_BG = QColor("#4a4a4a")       # empty portion
+BAR_RED = QColor("#c0392b")      # 0% fill colour
+BAR_GREEN = QColor("#27ae60")    # 100% fill colour
+NO_TASK_BG = QColor("#3d3d3d")   # no tasks entered
+
+
+def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
+    """Linearly interpolate between two colours (t in 0..1)."""
+    return QColor(
+        int(c1.red() + (c2.red() - c1.red()) * t),
+        int(c1.green() + (c2.green() - c1.green()) * t),
+        int(c1.blue() + (c2.blue() - c1.blue()) * t),
+    )
 
 
 # ── Data helpers ───────────────────────────────────────────────────────
@@ -59,14 +74,16 @@ def blank_tasks() -> list[dict]:
     return [{"text": "", "done": False, "carried": False} for _ in range(TASKS_PER_DAY)]
 
 
-def completion_count(day: date) -> int:
-    """Return 0-5 completed count, or -1 if no tasks entered."""
+def task_counts(day: date) -> tuple[int, int]:
+    """Return (completed, total_with_text).  (-1,-1) if no tasks."""
     data = load_day(day)
     if data is None:
-        return -1
-    if not any(t["text"].strip() for t in data):
-        return -1
-    return sum(1 for t in data if t["done"] and t["text"].strip())
+        return (-1, -1)
+    total = sum(1 for t in data if t["text"].strip())
+    if total == 0:
+        return (-1, -1)
+    done = sum(1 for t in data if t["done"] and t["text"].strip())
+    return (done, total)
 
 
 def carry_over_tasks(today: date) -> None:
@@ -85,7 +102,7 @@ def carry_over_tasks(today: date) -> None:
         today_data = blank_tasks()
 
     if any(t["carried"] for t in today_data):
-        return  # already carried over
+        return
 
     slot = 0
     for task in incomplete:
@@ -101,47 +118,98 @@ def carry_over_tasks(today: date) -> None:
     save_day(today, today_data)
 
 
-# ── Custom calendar widget with coloured day cells ────────────────────
+# ── Custom calendar widget ────────────────────────────────────────────
 class ColouredCalendar(QCalendarWidget):
+    """Calendar with progress-bar day cells and completion counts."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(420)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
     def paintCell(self, painter: QPainter, rect, qdate: QDate):
         day = date(qdate.year(), qdate.month(), qdate.day())
 
-        # Only colour cells that belong to the currently viewed month
+        # Dim out-of-month cells
         if qdate.month() != self.monthShown() or qdate.year() != self.yearShown():
-            super().paintCell(painter, rect, qdate)
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setBrush(QColor("#333333"))
+            painter.setPen(Qt.NoPen)
+            m = 2
+            painter.drawRoundedRect(rect.adjusted(m, m, -m, -m), 6, 6)
+            painter.setPen(QColor("#666666"))
+            font = painter.font()
+            font.setPointSize(10)
+            painter.setFont(font)
+            painter.drawText(rect, Qt.AlignCenter, str(qdate.day()))
+            painter.restore()
             return
 
-        count = completion_count(day)
-
-        if count == -1:
-            bg = NO_TASK_COLOR
-        else:
-            bg = COMPLETION_COLORS[min(count, 5)]
+        done, total = task_counts(day)
+        has_tasks = done >= 0
 
         painter.save()
-
-        # Background
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setBrush(bg)
-        painter.setPen(Qt.NoPen)
-        margin = 2
-        painter.drawRoundedRect(rect.adjusted(margin, margin, -margin, -margin), 4, 4)
 
-        # Today ring
+        m = 2
+        cell = rect.adjusted(m, m, -m, -m)
+
+        if not has_tasks:
+            # No tasks: plain dark cell
+            painter.setBrush(NO_TASK_BG)
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(cell, 6, 6)
+        else:
+            # Draw empty portion (full cell)
+            painter.setBrush(BAR_BG)
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(cell, 6, 6)
+
+            # Draw filled portion left→right
+            fraction = done / total if total > 0 else 0.0
+            if fraction > 0:
+                fill_color = _lerp_color(BAR_RED, BAR_GREEN, fraction)
+                fill_width = int(cell.width() * fraction)
+                fill_rect = QRect(cell.left(), cell.top(), fill_width, cell.height())
+
+                # Clip to rounded shape
+                from PyQt5.QtGui import QPainterPath
+                clip_path = QPainterPath()
+                clip_path.addRoundedRect(float(cell.left()), float(cell.top()),
+                                         float(cell.width()), float(cell.height()), 6, 6)
+                painter.setClipPath(clip_path)
+                painter.setBrush(fill_color)
+                painter.drawRect(fill_rect)
+                painter.setClipping(False)
+
+        # Today outline
         if day == date.today():
-            pen = painter.pen()
-            from PyQt5.QtGui import QPen
-            painter.setPen(QPen(QColor("#ffffff"), 2))
+            painter.setPen(QPen(QColor(UBUNTU_ACCENT), 2.5))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(margin, margin, -margin, -margin), 4, 4)
+            painter.drawRoundedRect(cell, 6, 6)
 
-        # Day number
-        painter.setPen(QColor("#ffffff"))
+        # Day number (top-left area)
+        painter.setPen(QColor(UBUNTU_TEXT))
         font = painter.font()
-        font.setPointSize(10)
+        font.setPointSize(11)
         font.setBold(day == date.today())
         painter.setFont(font)
-        painter.drawText(rect, Qt.AlignCenter, str(qdate.day()))
+
+        text_rect = QRect(cell.left() + 6, cell.top() + 2, cell.width() - 12, cell.height() // 2)
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(qdate.day()))
+
+        # Completion count (bottom portion, smaller)
+        if has_tasks:
+            count_font = QFont(painter.font())
+            count_font.setPointSize(8)
+            count_font.setBold(False)
+            painter.setFont(count_font)
+            count_color = QColor("#ffffff") if done == total else QColor("#cccccc")
+            painter.setPen(count_color)
+            count_rect = QRect(cell.left() + 6, cell.top() + cell.height() // 2,
+                               cell.width() - 12, cell.height() // 2 - 2)
+            painter.drawText(count_rect, Qt.AlignLeft | Qt.AlignVCenter, f"{done}/{total}")
 
         painter.restore()
 
@@ -172,7 +240,7 @@ class TaskRow(QWidget):
         if task.get("carried"):
             tag = QLabel("carried")
             tag.setStyleSheet(
-                "background: #d35400; color: white; border-radius: 6px;"
+                f"background: {UBUNTU_ACCENT}; color: white; border-radius: 6px;"
                 "padding: 1px 6px; font-size: 11px;"
             )
             layout.addWidget(tag)
@@ -191,9 +259,9 @@ class TaskRow(QWidget):
         font.setStrikeOut(self.task["done"])
         self.text_edit.setFont(font)
         if self.task["done"]:
-            self.text_edit.setStyleSheet("color: #6a7a8a;")
+            self.text_edit.setStyleSheet(f"color: {UBUNTU_TEXT_DIM};")
         else:
-            self.text_edit.setStyleSheet("color: #e0e0e0;")
+            self.text_edit.setStyleSheet(f"color: {UBUNTU_TEXT};")
 
 
 # ── Main window ───────────────────────────────────────────────────────
@@ -201,7 +269,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Daily Checklist")
-        self.resize(520, 680)
+        self.resize(600, 820)
 
         carry_over_tasks(date.today())
 
@@ -216,20 +284,25 @@ class MainWindow(QMainWindow):
         self.calendar.setGridVisible(False)
         self.calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
         self.calendar.clicked.connect(self._on_date_clicked)
-        root.addWidget(self.calendar)
+        root.addWidget(self.calendar, stretch=3)
 
         # ── Legend ──
         legend_layout = QHBoxLayout()
-        legend_layout.setSpacing(10)
-        legend_labels = ["0/5", "1/5", "2/5", "3/5", "4/5", "5/5"]
-        for i, label_text in enumerate(legend_labels):
-            swatch = QLabel("  ")
+        legend_layout.setSpacing(8)
+        steps = [
+            (BAR_BG, "no tasks"),
+            (BAR_RED, "0%"),
+            (_lerp_color(BAR_RED, BAR_GREEN, 0.5), "50%"),
+            (BAR_GREEN, "100%"),
+        ]
+        for color, label_text in steps:
+            swatch = QLabel()
             swatch.setFixedSize(16, 16)
             swatch.setStyleSheet(
-                f"background: {COMPLETION_COLORS[i].name()}; border-radius: 3px;"
+                f"background: {color.name()}; border-radius: 3px;"
             )
             lbl = QLabel(label_text)
-            lbl.setStyleSheet("color: #8899aa; font-size: 12px;")
+            lbl.setStyleSheet(f"color: {UBUNTU_TEXT_DIM}; font-size: 12px;")
             legend_layout.addWidget(swatch)
             legend_layout.addWidget(lbl)
         legend_layout.addStretch()
@@ -237,7 +310,9 @@ class MainWindow(QMainWindow):
 
         # ── Checklist header ──
         self.checklist_label = QLabel()
-        self.checklist_label.setStyleSheet("font-size: 15px; font-weight: bold; color: white;")
+        self.checklist_label.setStyleSheet(
+            f"font-size: 15px; font-weight: bold; color: {UBUNTU_TEXT};"
+        )
         root.addWidget(self.checklist_label)
 
         # ── Task rows container ──
@@ -248,11 +323,10 @@ class MainWindow(QMainWindow):
         root.addStretch()
 
         info = QLabel("Click a day to edit its checklist. Incomplete tasks carry over automatically.")
-        info.setStyleSheet("color: #667788; font-size: 12px;")
+        info.setStyleSheet(f"color: {UBUNTU_TEXT_DIM}; font-size: 12px;")
         info.setAlignment(Qt.AlignCenter)
         root.addWidget(info)
 
-        # Show today on launch
         self.selected_date = date.today()
         self._render_checklist()
 
@@ -261,7 +335,6 @@ class MainWindow(QMainWindow):
         self._render_checklist()
 
     def _render_checklist(self):
-        # Clear existing task rows
         while self.task_container.count():
             item = self.task_container.takeAt(0)
             if item.widget():
@@ -289,76 +362,83 @@ class MainWindow(QMainWindow):
         self.calendar.updateCells()
 
 
-# ── Stylesheet ────────────────────────────────────────────────────────
-STYLESHEET = """
-QMainWindow, QWidget {
-    background: #1a1a2e;
-    color: #e0e0e0;
-}
-QCalendarWidget {
-    background: #16213e;
-    border: 1px solid #2c3e6b;
+# ── Ubuntu Yaru Dark stylesheet ───────────────────────────────────────
+STYLESHEET = f"""
+QMainWindow, QWidget {{
+    background: {UBUNTU_BG};
+    color: {UBUNTU_TEXT};
+    font-family: 'Ubuntu', 'Cantarell', sans-serif;
+}}
+QCalendarWidget {{
+    background: {UBUNTU_SURFACE};
+    border: 1px solid {UBUNTU_BORDER};
     border-radius: 8px;
-}
-QCalendarWidget QToolButton {
-    color: #e0e0e0;
-    background: #0f3460;
+}}
+QCalendarWidget QToolButton {{
+    color: {UBUNTU_TEXT};
+    background: {UBUNTU_SURFACE_LIGHT};
     border: none;
     border-radius: 4px;
-    padding: 6px 12px;
+    padding: 8px 14px;
     font-size: 14px;
     font-weight: bold;
-}
-QCalendarWidget QToolButton:hover {
-    background: #1a5276;
-}
-QCalendarWidget QMenu {
-    background: #16213e;
-    color: #e0e0e0;
-}
-QCalendarWidget QSpinBox {
-    background: #0f3460;
-    color: #e0e0e0;
+}}
+QCalendarWidget QToolButton:hover {{
+    background: {UBUNTU_ACCENT};
+}}
+QCalendarWidget QMenu {{
+    background: {UBUNTU_SURFACE};
+    color: {UBUNTU_TEXT};
+    border: 1px solid {UBUNTU_BORDER};
+}}
+QCalendarWidget QMenu::item:selected {{
+    background: {UBUNTU_ACCENT};
+}}
+QCalendarWidget QSpinBox {{
+    background: {UBUNTU_SURFACE_LIGHT};
+    color: {UBUNTU_TEXT};
     border: none;
     padding: 4px;
-}
-QCalendarWidget QAbstractItemView {
-    background: #16213e;
-    selection-background-color: #0f3460;
+}}
+QCalendarWidget QAbstractItemView {{
+    background: {UBUNTU_SURFACE};
+    selection-background-color: {UBUNTU_ACCENT};
     selection-color: #ffffff;
-    color: #e0e0e0;
-}
-QCalendarWidget QWidget#qt_calendar_navigationbar {
-    background: #0f3460;
+    color: {UBUNTU_TEXT};
+    outline: none;
+}}
+QCalendarWidget QWidget#qt_calendar_navigationbar {{
+    background: {UBUNTU_SURFACE_LIGHT};
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
-}
-QCheckBox::indicator {
+    padding: 4px;
+}}
+QCheckBox::indicator {{
     width: 20px;
     height: 20px;
-}
-QCheckBox::indicator:unchecked {
-    border: 2px solid #2c3e6b;
+}}
+QCheckBox::indicator:unchecked {{
+    border: 2px solid {UBUNTU_BORDER};
     border-radius: 4px;
     background: transparent;
-}
-QCheckBox::indicator:checked {
-    border: 2px solid #27ae60;
+}}
+QCheckBox::indicator:checked {{
+    border: 2px solid {UBUNTU_GREEN};
     border-radius: 4px;
-    background: #27ae60;
-}
-QLineEdit {
-    background: #0f3460;
+    background: {UBUNTU_GREEN};
+}}
+QLineEdit {{
+    background: {UBUNTU_SURFACE_LIGHT};
     border: none;
-    border-bottom: 1px solid #2c3e6b;
+    border-bottom: 1px solid {UBUNTU_BORDER};
     border-radius: 4px;
     padding: 6px 8px;
-    color: #e0e0e0;
+    color: {UBUNTU_TEXT};
     font-size: 14px;
-}
-QLineEdit:focus {
-    border-bottom: 1px solid #53c7f0;
-}
+}}
+QLineEdit:focus {{
+    border-bottom: 2px solid {UBUNTU_ACCENT};
+}}
 """
 
 
