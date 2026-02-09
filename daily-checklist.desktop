@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Daily Checklist
+Comment=Calendar-based daily task checklist
+Exec=/home/andrew/projects/daily-checklist/.venv/bin/python /home/andrew/projects/daily-checklist/daily_checklist.py
+Icon=org.gnome.Calendar
+Terminal=false
+Categories=Utility;Office;
+StartupWMClass=daily-checklist
