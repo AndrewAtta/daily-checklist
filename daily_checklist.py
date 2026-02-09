@@ -9,8 +9,8 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QDate, QRect, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPen, QTextCharFormat
+from PyQt5.QtCore import Qt, QDate, QMimeData, QPoint, QRect, pyqtSignal
+from PyQt5.QtGui import QColor, QDrag, QFont, QPainter, QPen, QPixmap, QTextCharFormat
 from PyQt5.QtWidgets import (
     QApplication,
     QCalendarWidget,
@@ -239,6 +239,55 @@ class ColouredCalendar(QCalendarWidget):
         painter.restore()
 
 
+# ── Drag handle label ─────────────────────────────────────────────────
+class DragHandle(QLabel):
+    """A small grip icon that initiates drag when clicked."""
+
+    def __init__(self, parent=None):
+        super().__init__("\u2630", parent)  # ☰ trigram
+        self.setCursor(Qt.OpenHandCursor)
+        self.setFixedWidth(20)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet(f"color: {UBUNTU_TEXT_DIM}; font-size: 14px;")
+        self._drag_start = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_start = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start is None:
+            return
+        if (event.pos() - self._drag_start).manhattanLength() < QApplication.startDragDistance():
+            return
+
+        # Find the TaskRow parent
+        task_row = self.parent()
+        while task_row and not isinstance(task_row, TaskRow):
+            task_row = task_row.parent()
+        if not task_row:
+            return
+
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setText(str(task_row.index))
+        drag.setMimeData(mime)
+
+        # Create a snapshot of the row as drag pixmap
+        pixmap = task_row.grab()
+        drag.setPixmap(pixmap.scaled(pixmap.width(), pixmap.height()))
+        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+
+        self.setCursor(Qt.OpenHandCursor)
+        self._drag_start = None
+        drag.exec_(Qt.MoveAction)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_start = None
+        self.setCursor(Qt.OpenHandCursor)
+
+
 # ── Task row widget ───────────────────────────────────────────────────
 class TaskRow(QWidget):
     changed = pyqtSignal()
@@ -246,9 +295,13 @@ class TaskRow(QWidget):
 
     def __init__(self, index: int, task: dict, parent=None):
         super().__init__(parent)
+        self.index = index
         self.task = task
+        self.setAcceptDrops(True)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
+
+        self.drag_handle = DragHandle(self)
 
         self.checkbox = QCheckBox()
         self.checkbox.setChecked(task["done"])
@@ -267,6 +320,7 @@ class TaskRow(QWidget):
         remove_btn.setToolTip("Remove task")
         remove_btn.clicked.connect(self.removed.emit)
 
+        layout.addWidget(self.drag_handle)
         layout.addWidget(self.checkbox)
         layout.addWidget(self.text_edit)
 
@@ -279,6 +333,8 @@ class TaskRow(QWidget):
             layout.addWidget(tag)
 
         layout.addWidget(remove_btn)
+
+        self._drop_indicator_visible = False
 
     def _on_toggle(self, state):
         self.task["done"] = state == Qt.Checked
@@ -297,6 +353,37 @@ class TaskRow(QWidget):
             self.text_edit.setStyleSheet(f"color: {UBUNTU_TEXT_DIM};")
         else:
             self.text_edit.setStyleSheet(f"color: {UBUNTU_TEXT};")
+
+    # ── Drop target ──
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+            self._drop_indicator_visible = True
+            self.update()
+
+    def dragLeaveEvent(self, event):
+        self._drop_indicator_visible = False
+        self.update()
+
+    def dropEvent(self, event):
+        self._drop_indicator_visible = False
+        self.update()
+        source_index = int(event.mimeData().text())
+        target_index = self.index
+        if source_index != target_index:
+            # Find MainWindow and call reorder
+            w = self.window()
+            if isinstance(w, MainWindow):
+                w._reorder_task(source_index, target_index)
+        event.acceptProposedAction()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._drop_indicator_visible:
+            p = QPainter(self)
+            p.setPen(QPen(QColor(UBUNTU_ACCENT), 2))
+            p.drawLine(0, 0, self.width(), 0)
+            p.end()
 
 
 # ── Main window ───────────────────────────────────────────────────────
@@ -436,6 +523,16 @@ class MainWindow(QMainWindow):
         self._render_checklist()
         self.calendar.updateCells()
 
+    def _reorder_task(self, from_index: int, to_index: int):
+        day = self.selected_date
+        data = load_day(day)
+        if data is None or from_index >= len(data) or to_index >= len(data):
+            return
+        task = data.pop(from_index)
+        data.insert(to_index, task)
+        save_day(day, data)
+        self._render_checklist()
+
     def _on_task_changed(self, day: date, tasks: list[dict]):
         save_day(day, tasks)
         self.calendar.updateCells()
@@ -566,6 +663,12 @@ QPushButton#removeTaskBtn {{
 QPushButton#removeTaskBtn:hover {{
     background: #c0392b;
     color: #ffffff;
+}}
+DragHandle {{
+    color: {UBUNTU_TEXT_DIM};
+    font-size: 14px;
+    padding: 0px;
+    background: transparent;
 }}
 """
 
