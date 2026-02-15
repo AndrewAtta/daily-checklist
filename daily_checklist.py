@@ -9,7 +9,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QDate, QMimeData, QPoint, QRect, pyqtSignal
+from PyQt5.QtCore import Qt, QDate, QMimeData, QPoint, QRect, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QDrag, QFont, QPainter, QPen, QPixmap, QTextCharFormat
 from PyQt5.QtWidgets import (
     QApplication,
@@ -91,42 +91,65 @@ def task_counts(day: date) -> tuple[int, int]:
 
 
 def carry_over_tasks(today: date) -> None:
-    """Copy incomplete tasks from yesterday into today's empty slots."""
-    yesterday = today - timedelta(days=1)
-    prev = load_day(yesterday)
-    if prev is None:
-        return
+    """Chain-carry incomplete tasks from the most recent day with tasks up to today.
 
-    incomplete = [t for t in prev if t["text"].strip() and not t["done"]]
-    if not incomplete:
-        return
-
-    today_data = load_day(today)
-    if today_data is None:
-        today_data = blank_tasks()
-
-    if any(t["carried"] for t in today_data):
-        return
-
-    # Fill empty slots first
-    slot = 0
-    remaining = list(incomplete)
-    for task in list(remaining):
-        while slot < len(today_data) and today_data[slot]["text"].strip():
-            slot += 1
-        if slot >= len(today_data):
+    If the app has been open (or closed) across multiple days, this walks
+    backwards to find the last day that has task data and carries its
+    incomplete items forward through each intermediate day up to today.
+    """
+    # Find the most recent previous day that has data (up to 30 days back)
+    last_day = None
+    for offset in range(1, 31):
+        candidate = today - timedelta(days=offset)
+        if load_day(candidate) is not None:
+            last_day = candidate
             break
-        today_data[slot]["text"] = task["text"]
-        today_data[slot]["done"] = False
-        today_data[slot]["carried"] = True
-        remaining.remove(task)
-        slot += 1
 
-    # Append any that didn't fit into existing slots
-    for task in remaining:
-        today_data.append({"text": task["text"], "done": False, "carried": True})
+    if last_day is None:
+        return
 
-    save_day(today, today_data)
+    # Chain carry-over day by day: last_day → last_day+1 → … → today
+    current = last_day + timedelta(days=1)
+    while current <= today:
+        prev = current - timedelta(days=1)
+        prev_data = load_day(prev)
+        if prev_data is None:
+            current += timedelta(days=1)
+            continue
+
+        incomplete = [t for t in prev_data if t["text"].strip() and not t["done"]]
+        if not incomplete:
+            current += timedelta(days=1)
+            continue
+
+        cur_data = load_day(current)
+        if cur_data is None:
+            cur_data = blank_tasks()
+
+        if any(t["carried"] for t in cur_data):
+            current += timedelta(days=1)
+            continue
+
+        # Fill empty slots first
+        slot = 0
+        remaining = list(incomplete)
+        for task in list(remaining):
+            while slot < len(cur_data) and cur_data[slot]["text"].strip():
+                slot += 1
+            if slot >= len(cur_data):
+                break
+            cur_data[slot]["text"] = task["text"]
+            cur_data[slot]["done"] = False
+            cur_data[slot]["carried"] = True
+            remaining.remove(task)
+            slot += 1
+
+        # Append any that didn't fit into existing slots
+        for task in remaining:
+            cur_data.append({"text": task["text"], "done": False, "carried": True})
+
+        save_day(current, cur_data)
+        current += timedelta(days=1)
 
 
 # ── Custom calendar widget ────────────────────────────────────────────
@@ -393,7 +416,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Daily Checklist")
         self.resize(600, 820)
 
-        carry_over_tasks(date.today())
+        self._last_known_date = date.today()
+        carry_over_tasks(self._last_known_date)
+
+        # Check for date changes every 30 seconds (handles midnight rollover)
+        self._date_timer = QTimer(self)
+        self._date_timer.timeout.connect(self._check_date_change)
+        self._date_timer.start(30_000)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -472,6 +501,17 @@ class MainWindow(QMainWindow):
         self.calendar.setSelectedDate(QDate(today.year, today.month, today.day))
         self.selected_date = today
         self._render_checklist()
+
+    def _check_date_change(self):
+        """Called periodically to detect midnight rollover and run carry-over."""
+        today = date.today()
+        if today != self._last_known_date:
+            carry_over_tasks(today)
+            self._last_known_date = today
+            self.calendar.updateCells()
+            # If user was viewing the old "today", auto-switch to new today
+            if self.selected_date == today - timedelta(days=1):
+                self._jump_to_today()
 
     def _on_date_clicked(self, qdate: QDate):
         self.selected_date = date(qdate.year(), qdate.month(), qdate.day())
